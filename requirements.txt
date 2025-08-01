@@ -14,3 +14,7 @@ uvicorn
 # protobuf
 # einops
 groq
+# fastapi
+# uvicorn
+# groq
+python-dotenv
