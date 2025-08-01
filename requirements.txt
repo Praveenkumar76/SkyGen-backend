@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+# httpx
+# requests
+# torch
+# diffusers
+# transformers
+# accelerate
+# pydantic
+# datasets
+# pyngrok
+# bitsandbytes
+# sentencepiece
+# protobuf
+# einops
+groq
