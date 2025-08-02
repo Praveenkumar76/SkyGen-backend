@@ -47,7 +47,7 @@ async def generate_text_stream(request: ChatRequest):
             # Create a streaming chat completion request to Groq
             stream = await client.chat.completions.create(
                 messages=messages_for_groq,
-                model = "llama‑3.1‑70b‑versatile",  # Use a model available on Groq
+                model = "Llama‑3‑Groq‑70B‑Tool‑U",  # Use a model available on Groq
                 stream=True,
             )
             # Yield each token as it arrives
