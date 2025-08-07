@@ -44,3 +44,7 @@ pytest_cache/
 # Misc
 *.bak
 *.tmp
+
+# Test files
+test_tools.py
+manual_agent.py

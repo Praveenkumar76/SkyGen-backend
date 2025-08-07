@@ -20,3 +20,4 @@ groq
 # uvicorn
 # groq
 python-dotenv
+supabase
