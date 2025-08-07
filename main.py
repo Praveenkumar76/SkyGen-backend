@@ -38,7 +38,7 @@ class AgentChatRequest(BaseModel):
 # --- Agent Setup ---
 TOOL_MAP = {
     # Ensure these names match your functions in tools.py exactly
-    "get_user": tools.get_user_profile,
+    "get_user_profile": tools.get_user,
     "update_user_profile": tools.update_user_profile,
     "delete_conversation_by_title": tools.delete_conversation_by_title,
     "sign_out_user": tools.sign_out_user,
