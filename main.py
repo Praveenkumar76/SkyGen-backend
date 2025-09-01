@@ -19,7 +19,7 @@ app = FastAPI(title="SkyGen Agent Backend")
 if not os.environ.get("GROQ_API_KEY") or not os.environ.get("SUPABASE_URL") or not os.environ.get("SUPABASE_KEY"):
     raise RuntimeError("Required environment variables are not set. Please check your .env file.")
 
-client = AsyncGroq(api_key=os.environ.get("GROQ_API_KEY"))
+groq_client = AsyncGroq(api_key=os.environ.get("GROQ_API_KEY"))
 
 # --- CORS Middleware ---
 app.add_middleware(
@@ -94,9 +94,9 @@ async def agent_chat_stream(request: AgentChatRequest):
     async def event_generator():
         try:
             # 1. First call to LLM to decide on a tool or a direct answer
-            initial_response = await client.chat.completions.create(
+            initial_response = await groq_client.chat.completions.create(
                 messages=messages_for_groq,
-                model="llama3-70b-8192",
+                model="openai/gpt-oss-120b",
                 temperature=0.0,
                 stream=False  # We need the full response to check for a tool call
             )
@@ -123,7 +123,7 @@ async def agent_chat_stream(request: AgentChatRequest):
                 if action_name in TOOL_MAP:
                     tool_function = TOOL_MAP[action_name]
                     # The user_id is now automatically passed to the tool functions
-                    observation = tool_function(**action_input)
+                    observation = await tool_function(**action_input)
                     
                     # Handle special sign-out action
                     if observation == "ACTION_SIGN_OUT":
@@ -134,9 +134,9 @@ async def agent_chat_stream(request: AgentChatRequest):
                     
                     # Get a final confirmation message from the LLM
                     final_prompt = f"The user's original request was: '{request.messages[-1].content}'. You used the tool '{action_name}' and the result was: '{observation}'. Briefly and cheerfully confirm this action to the user. Do not use any special formatting."
-                    final_response_stream = await client.chat.completions.create(
+                    final_response_stream = await groq_client.chat.completions.create(
                         messages=[{"role": "user", "content": final_prompt}],
-                        model="llama3-8b-8192",
+                        model="openai/gpt-oss-120b",
                         stream=True
                     )
                     async for chunk in final_response_stream:
@@ -151,9 +151,9 @@ async def agent_chat_stream(request: AgentChatRequest):
                 # Stream the original non-tool response token by token
                 # This is a bit inefficient as we're re-requesting, but it's the simplest way to get a stream
                 # from a non-streamed initial response. A more advanced solution might use a custom buffer.
-                stream = await client.chat.completions.create(
+                stream = await groq_client.chat.completions.create(
                     messages=messages_for_groq,
-                    model="llama3-70b-8192",
+                    model="openai/gpt-oss-120b",
                     temperature=0.0,
                     stream=True
                 )
