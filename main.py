@@ -6,25 +6,30 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Literal, Optional
 from groq import AsyncGroq
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
+
+# --- App and Client Initialization ---
+load_dotenv(find_dotenv())
 
 # --- Import our tools ---
 import tools
 
-# --- App and Client Initialization ---
-load_dotenv()
 app = FastAPI(title="SkyGen Agent Backend")
 
-# Ensure API keys are loaded
-if not os.environ.get("GROQ_API_KEY") or not os.environ.get("SUPABASE_URL") or not os.environ.get("SUPABASE_KEY"):
-    raise RuntimeError("Required environment variables are not set. Please check your .env file.")
+# Ensure API keys are loaded using the new, clear variable names
+if not all([
+    os.environ.get("GROQ_API_KEY"),
+    os.environ.get("SKYGEN_URL"),
+    os.environ.get("SKYGEN_SERVICE_KEY")
+]):
+    raise RuntimeError("Required environment variables are not set. Please check your .env file for GROQ_API_KEY, SKYGEN_URL, and SKYGEN_SERVICE_KEY.")
 
 groq_client = AsyncGroq(api_key=os.environ.get("GROQ_API_KEY"))
 
 # --- CORS Middleware ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # In production, restrict this to your frontend's domain
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -44,27 +49,28 @@ TOOL_MAP = {
     "get_user": tools.get_user,
     "update_user_profile": tools.update_user_profile,
     "delete_conversation_by_title": tools.delete_conversation_by_title,
+    "delete_all_conversations": tools.delete_all_conversations,
     "sign_out_user": tools.sign_out_user,
 }
 
-# IMPROVED: This prompt is more direct, telling the model exactly how to format its response.
-# This makes parsing much more reliable than searching for "Action:".
 MASTER_PROMPT_TEMPLATE = """
-You are SkyGen, a powerful assistant integrated into an application. You can have normal conversations OR use tools to perform actions.
+You are SkyGen, a powerful assistant. You can have normal conversations OR use tools to perform actions.
+- For a normal chat question, answer directly.
+- When a user asks you to perform an action, you MUST use a tool.
 
-- For a normal chat question (e.g., 'What is React?'), you MUST NOT use a tool. Just answer directly as a helpful assistant.
-- When a user asks you to perform an action (e.g., 'delete my chat about groceries', 'change my name to Alex', 'sign me out'), you MUST use a tool.
+**TOOL USAGE GUIDELINES**:
+- For "delete all conversations" or "clear all chats" → use delete_all_conversations
+- For "delete conversation about X" → use delete_conversation_by_title with the specific title
+- For profile updates → use update_user_profile
+- For signing out → use sign_out_user
 
 You have access to the following tools:
 {tool_descriptions}
 
 **CRITICAL INSTRUCTION**:
-- If you decide to use a tool, your ENTIRE response MUST be a single JSON object.
-- The JSON object must have three keys: "thought", "tool_name", and "tool_input".
-- Example of a tool-use response:
-  {{"thought": "The user wants to delete a conversation. I need to find the title and use the delete tool.", "tool_name": "delete_conversation_by_title", "tool_input": {{"user_id": "some-uuid", "title": "Grocery List"}}}}
-
-- If you are NOT using a tool, respond naturally as a conversational assistant. Do NOT use the JSON format.
+- If you use a tool, your ENTIRE response MUST be a single JSON object with "thought", "tool_name", and "tool_input" keys.
+- Example: {{"thought": "The user wants to sign out.", "tool_name": "sign_out_user", "tool_input": {{"user_id": "some-uuid"}}}}
+- If you are NOT using a tool, respond naturally as a conversational assistant.
 
 Current User ID is: {user_id}
 Begin!
@@ -84,8 +90,7 @@ async def agent_chat_stream(request: AgentChatRequest):
     
     master_prompt = MASTER_PROMPT_TEMPLATE.format(
         tool_descriptions=tool_descriptions,
-        tool_names=", ".join(TOOL_MAP.keys()),
-        user_id=request.user_id # Pass user_id to the prompt context
+        user_id=request.user_id
     )
 
     messages_for_groq = [{"role": "system", "content": master_prompt}]
@@ -93,67 +98,87 @@ async def agent_chat_stream(request: AgentChatRequest):
 
     async def event_generator():
         try:
-            # 1. First call to LLM to decide on a tool or a direct answer
             initial_response = await groq_client.chat.completions.create(
                 messages=messages_for_groq,
-                model="openai/gpt-oss-120b",
+                model="llama-3.3-70b-versatile",
                 temperature=0.0,
-                stream=False  # We need the full response to check for a tool call
+                stream=False
             )
             llm_output = initial_response.choices[0].message.content.strip()
 
-            # 2. Check if the response is a tool call (a valid JSON)
+            # Check if the response contains JSON tool calls
+            is_tool_call = False
+            tool_calls = []
+            
+            # Try to parse as single JSON
             try:
                 tool_call_data = json.loads(llm_output)
-                is_tool_call = "tool_name" in tool_call_data and "tool_input" in tool_call_data
+                if "tool_name" in tool_call_data and "tool_input" in tool_call_data:
+                    is_tool_call = True
+                    tool_calls = [tool_call_data]
             except json.JSONDecodeError:
-                is_tool_call = False
+                # Try to parse multiple JSON objects (one per line)
+                lines = llm_output.strip().split('\n')
+                for line in lines:
+                    line = line.strip()
+                    if line:
+                        try:
+                            tool_call_data = json.loads(line)
+                            if "tool_name" in tool_call_data and "tool_input" in tool_call_data:
+                                tool_calls.append(tool_call_data)
+                                is_tool_call = True
+                        except json.JSONDecodeError:
+                            continue
 
-            # --- BRANCH 1: Agent decided to use a tool ---
             if is_tool_call:
-                action_name = tool_call_data.get("tool_name")
-                action_input = tool_call_data.get("tool_input", {})
+                all_observations = []
+                sign_out_requested = False
                 
-                # Ensure user_id from the request is used, not a hallucinated one
-                action_input['user_id'] = request.user_id
+                # Execute all tool calls
+                for tool_call_data in tool_calls:
+                    action_name = tool_call_data.get("tool_name")
+                    action_input = tool_call_data.get("tool_input", {})
+                    action_input['user_id'] = request.user_id
 
-                yield sse_pack({'type': 'thought', 'content': tool_call_data.get("thought", "Thinking...")})
-                yield sse_pack({'type': 'tool_call', 'tool_name': action_name, 'tool_input': action_input})
+                    yield sse_pack({'type': 'thought', 'content': tool_call_data.get("thought", "Thinking...")})
+                    yield sse_pack({'type': 'tool_call', 'tool_name': action_name, 'tool_input': action_input})
 
-                if action_name in TOOL_MAP:
-                    tool_function = TOOL_MAP[action_name]
-                    # The user_id is now automatically passed to the tool functions
-                    observation = await tool_function(**action_input)
-                    
-                    # Handle special sign-out action
-                    if observation == "ACTION_SIGN_OUT":
-                        yield sse_pack({'type': 'agent_action', 'action': 'sign_out'})
-                        return
-
-                    yield sse_pack({'type': 'tool_output', 'content': observation})
-                    
-                    # Get a final confirmation message from the LLM
-                    final_prompt = f"The user's original request was: '{request.messages[-1].content}'. You used the tool '{action_name}' and the result was: '{observation}'. Briefly and cheerfully confirm this action to the user. Do not use any special formatting."
+                    if action_name in TOOL_MAP:
+                        tool_function = TOOL_MAP[action_name]
+                        observation = await tool_function(**action_input)
+                        all_observations.append(f"{action_name}: {observation}")
+                        
+                        if observation == "ACTION_SIGN_OUT":
+                            sign_out_requested = True
+                        
+                        yield sse_pack({'type': 'tool_output', 'content': observation})
+                    else:
+                        error_msg = f"Error: Tool '{action_name}' does not exist."
+                        all_observations.append(error_msg)
+                        yield sse_pack({'type': 'error', 'content': error_msg})
+                
+                # Handle sign out if requested
+                if sign_out_requested:
+                    yield sse_pack({'type': 'agent_action', 'action': 'sign_out'})
+                    return
+                
+                # Generate final response
+                if all_observations:
+                    final_prompt = f"Original request: '{request.messages[-1].content}'. You executed these actions: {'; '.join(all_observations)}. Briefly and cheerfully confirm what you did."
                     final_response_stream = await groq_client.chat.completions.create(
                         messages=[{"role": "user", "content": final_prompt}],
-                        model="openai/gpt-oss-120b",
+                        model="llama-3.3-70b-versatile",
                         stream=True
                     )
                     async for chunk in final_response_stream:
                         token = chunk.choices[0].delta.content or ""
                         if token:
                             yield sse_pack({'type': 'final_answer', 'content': token})
-                else:
-                    yield sse_pack({'type': 'error', 'content': f"Error: Agent tried to use a tool '{action_name}' that does not exist."})
 
-            # --- BRANCH 2: Agent decided to respond directly ---
             else:
-                # Stream the original non-tool response token by token
-                # This is a bit inefficient as we're re-requesting, but it's the simplest way to get a stream
-                # from a non-streamed initial response. A more advanced solution might use a custom buffer.
                 stream = await groq_client.chat.completions.create(
                     messages=messages_for_groq,
-                    model="openai/gpt-oss-120b",
+                    model="llama-3.3-70b-versatile",
                     temperature=0.0,
                     stream=True
                 )
@@ -167,7 +192,6 @@ async def agent_chat_stream(request: AgentChatRequest):
             yield sse_pack({'type': 'error', 'content': error_message})
         
         finally:
-            # Signal the end of the stream
             yield sse_pack({'done': True})
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
