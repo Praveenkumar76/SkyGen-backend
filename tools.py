@@ -1,16 +1,24 @@
+# In tools.py
+import httpx  # Make sure 'httpx' is imported at the top of tools.py
 import os
 import json
 from supabase import create_client, Client
 from groq import AsyncGroq
+from firecrawl import FirecrawlApp # <-- Add this import
 
-
-# Environment variables are loaded in main.py
+# --- MCP Client Imports (NEW) ---
+import mcp
+import asyncio
+import sys
+from mcp.client.stdio import stdio_client
+from mcp import StdioServerParameters, ClientSession
 
 # --- Initialize Clients for SkyGen ---
 # This setup assumes your environment variables are loaded in your main app.
 SKYGEN_URL = os.environ.get("SKYGEN_URL")
 SKYGEN_KEY = os.environ.get("SKYGEN_SERVICE_KEY")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+FIRECRAWL_API_KEY = os.environ.get("FIRECRAWL_API_KEY") # <-- Add this
 
 # Initialize clients lazily to avoid import-time errors
 skygen_supabase = None
@@ -22,7 +30,8 @@ def _ensure_clients():
     
     if not all([SKYGEN_URL, SKYGEN_KEY, GROQ_API_KEY]):
         raise ValueError("A required environment variable for SkyGen was not loaded. Check your server configuration.")
-    
+    if not FIRECRAWL_API_KEY:
+        raise ValueError("FIRECRAWL_API_KEY is not set. Check your .env file.")
     if skygen_supabase is None:
         skygen_supabase = create_client(SKYGEN_URL, SKYGEN_KEY)
     if groq_client is None:
@@ -149,3 +158,110 @@ async def sign_out_user(user_id: str) -> str:
     _ensure_clients()
     print(f"TOOL CALLED: sign_out_user for user_id: {user_id}")
     return "ACTION_SIGN_OUT"
+
+# ... (other imports)
+
+async def get_leetcode_stats(username: str, user_id: str = None) -> str:
+    """
+    Fetches a user's LeetCode problem-solving stats (Total, Easy, Medium, Hard) by username.
+    """
+    print(f"[tools.py] Received request for LeetCode user: {username}")
+    
+    # The query is moved here directly
+    query = """
+    query userProblemsSolved($username: String!) {
+        allQuestionsCount {
+            difficulty
+            count
+        }
+        matchedUser(username: $username) {
+            problemsSolvedBeatsStats {
+                difficulty
+                percentage
+            }
+            submitStatsGlobal {
+                acSubmissionNum {
+                    difficulty
+                    count
+                }
+            }
+        }
+    }
+    """
+    variables = {"username": username}
+    
+    # The fixed headers are here
+    headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': f'https://leetcode.com/{username}/'
+    }
+
+    try:
+        # We use httpx directly inside the tool
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                'https://leetcode.com/graphql',
+                json={'query': query, 'variables': variables},
+                headers=headers
+            )
+            response.raise_for_status() # Raise an exception for bad status codes
+            data = response.json()
+        
+        # --- Start of parsing logic from server.py ---
+        if "errors" in data:
+            return f"Observation: LeetCode API error: {data['errors'][0]['message']}"
+        if not data.get('data', {}).get('matchedUser'):
+             return f"Observation: No LeetCode user found with username: '{username}'"
+
+        solved_stats = data.get('data', {}).get('matchedUser', {}).get('submitStatsGlobal', {}).get('acSubmissionNum', [])
+        
+        # Format a clean answer
+        total = next((item['count'] for item in solved_stats if item['difficulty'] == 'All'), 0)
+        easy = next((item['count'] for item in solved_stats if item['difficulty'] == 'Easy'), 0)
+        medium = next((item['count'] for item in solved_stats if item['difficulty'] == 'Medium'), 0)
+        hard = next((item['count'] for item in solved_stats if item['difficulty'] == 'Hard'), 0)
+
+        return f"Observation: LeetCode stats for {username}: Total: {total} (Easy: {easy}, Medium: {medium}, Hard: {hard})"
+
+    except httpx.HTTPStatusError as e:
+        return f"Observation: Failed to get LeetCode data: HTTP Error {e.response.status_code}"
+    except Exception as e:
+        print(f"[tools.py] An error occurred: {e}")
+        return f"Observation: Failed to get LeetCode data: {e}"
+    
+async def search_the_web(user_id: str, query: str) -> str:
+    """
+    Searches the web for a query and scrapes the top results.
+    Use this to answer questions about current events, real-time information, or topics not in your training data.
+    """
+    _ensure_clients() # Ensures other keys are loaded if needed, good practice
+    print(f"TOOL CALLED: search_the_web with query: {query}")
+
+    try:
+        app = FirecrawlApp(api_key=FIRECRAWL_API_KEY)
+        
+        # We ask FireCrawl to search AND scrape the top 3 results
+        search_results = app.search(
+            query=query,
+            page_options={
+                "fetch_page_content": True, # This tells it to scrape
+                "limit": 3                  # Get top 3 pages
+            }
+        )
+        
+        # We will format the scraped content for the LLM
+        scraped_content = []
+        for result in search_results:
+            scraped_content.append(f"Source URL: {result.get('url')}\nContent: {result.get('markdown')[:2000]}") # Get first 2000 chars
+
+        if not scraped_content:
+            return "Observation: No results found for that query."
+            
+        # Join all sources into one big string
+        return f"Observation: Here is the information from the web:\n\n{'---'.join(scraped_content)}"
+
+    except Exception as e:
+        print(f"Error in FireCrawl tool: {e}")
+        return f"Observation: An error occurred while searching the web: {str(e)}"

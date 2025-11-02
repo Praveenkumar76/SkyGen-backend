@@ -1,23 +1,7 @@
 fastapi
-uvicorn
 uvicorn[standard]
 pydantic
-# httpx
-# requests
-# torch
-# diffusers
-# transformers
-# accelerate
-# pydantic
-# datasets
-# pyngrok
-# bitsandbytes
-# sentencepiece
-# protobuf
-# einops
-groq
-# fastapi
-# uvicorn
-# groq
 python-dotenv
+groq
 supabase
+mcp
