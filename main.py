@@ -26,13 +26,20 @@ if not all([
 
 groq_client = AsyncGroq(api_key=os.environ.get("GROQ_API_KEY"))
 
-# --- CORS Middleware ---
+# 2. Define your frontend URLs that are allowed to make requests
+origins = [
+    "https://sky-gen.vercel.app",  # Your Vercel production frontend
+    "http://localhost:5173",      # Your local development frontend
+    # You can add more origins here if needed
+]
+
+# 3. Add the middleware to your app
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=origins,          # List of allowed origins
+    allow_credentials=True,       # Allow cookies
+    allow_methods=["*"],          # Allow all methods (GET, POST, OPTIONS, etc.)
+    allow_headers=["*"],          # Allow all headers
 )
 
 # --- Pydantic Models ---
