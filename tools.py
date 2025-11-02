@@ -18,7 +18,7 @@ from mcp import StdioServerParameters, ClientSession
 SKYGEN_URL = os.environ.get("SKYGEN_URL")
 SKYGEN_KEY = os.environ.get("SKYGEN_SERVICE_KEY")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-FIRECRAWL_API_KEY = os.environ.get("FIRECRAWL_API_KEY") # <-- Add this
+FIRECRAWL_API_KEY = os.environ.get("WEB_SCRAPE") # <-- Add this
 
 # Initialize clients lazily to avoid import-time errors
 skygen_supabase = None
