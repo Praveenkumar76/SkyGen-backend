@@ -14,6 +14,9 @@ venv/
 # Node.js dependencies
 node_modules/
 
+# Prisma generated client
+generated/
+
 # Logs
 *.log
 npm-debug.log*

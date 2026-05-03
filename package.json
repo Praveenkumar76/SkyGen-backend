@@ -1,0 +1,9 @@
+{
+  "name": "skygen-backend-prisma",
+  "private": true,
+  "dependencies": {
+    "@prisma/client": "^7.8.0",
+    "dotenv": "^16.0.0",
+    "prisma": "^7.8.0"
+  }
+}
